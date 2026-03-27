@@ -7,9 +7,10 @@
 #include "rfx.h"
 #include "tusb.h"
 
-#define NRF_CMD_USBTEST   0xa1
-#define NRF_CMD_REBOOT    0xa2
-#define NRF_CMD_IQCAPTURE 0xca
+#define NRF_CMD_USBTEST          0xa1
+#define NRF_CMD_REBOOT           0xa2
+#define NRF_CMD_IQCAPTURE_STREAM 0xca
+#define NRF_CMD_IQCAPTURE_BURST  0xcb
 
 #define LED     (1 << 15) // the red led on the nice!nano
 #define MAXSAMP (62*1024)
@@ -17,6 +18,7 @@ __attribute__((aligned(4))) static uint32_t iq_buf[MAXSAMP];
 
 static volatile int gs_usb_cmd;
 static volatile int gs_capture_freq;
+static volatile int gs_streaming;
 
 void main_loop(void);
 
@@ -162,7 +164,11 @@ void tud_vendor_rx_cb(uint8_t intf, const uint8_t *buffer, uint32_t bufsize) {
 			case NRF_CMD_REBOOT:
 			case NRF_CMD_USBTEST:
 				break;
-			case NRF_CMD_IQCAPTURE:
+			case NRF_CMD_IQCAPTURE_STREAM:
+				gs_capture_freq = 2400 +buf[1];
+				gs_streaming = buf[2];
+				break;
+			case NRF_CMD_IQCAPTURE_BURST:
 				gs_capture_freq = 2400 +buf[1];
 				break;
 			default:
@@ -172,26 +178,23 @@ void tud_vendor_rx_cb(uint8_t intf, const uint8_t *buffer, uint32_t bufsize) {
 	}
 }
 
-void iqcapture(int freq) {
+void iqcapture_burst(int freq) {
 	init_radio(/*access address*/0, freq);
 	nrf_radio_event_clear(NRF_RADIO, RFX_RADIO_EVENT_IQCAPSTART);
 	nrf_radio_event_clear(NRF_RADIO, RFX_RADIO_EVENT_IQCAPEND);
 
-	radio_set_iq_capture(iq_buf, MAXSAMP);
 	radio_start_rx();
+	while (nrf_radio_state_get(NRF_RADIO) != NRF_RADIO_STATE_RX) { delay_us(1); } // settle PLL
 
+	radio_set_iq_capture(iq_buf, MAXSAMP);
 	radio_trigger_iq_capture();
 	// wait for capture to start
-	while (!nrf_radio_event_check(NRF_RADIO, RFX_RADIO_EVENT_IQCAPSTART)) {
-		delay_us(10);
-	}
-	delay_ms(1);
-	while (!nrf_radio_event_check(NRF_RADIO, RFX_RADIO_EVENT_IQCAPEND)) {
-		delay_us(10);
-	}
+	while (!nrf_radio_event_check(NRF_RADIO, RFX_RADIO_EVENT_IQCAPSTART)) { delay_us(1); }
+	delay_us(10);
+	while (!nrf_radio_event_check(NRF_RADIO, RFX_RADIO_EVENT_IQCAPEND)) { delay_us(1); }
 }
 
-void bulk_send() {
+void bulk_send_burst() {
 	uint32_t total_bytes = MAXSAMP * sizeof(iq_buf[0]);
 	uint32_t bytes_sent = 0;
 	uint8_t* ptr = (uint8_t*)iq_buf;
@@ -233,6 +236,63 @@ void bulk_send() {
 	}
 }
 
+void iqcapture_stream(int freq) {
+	init_radio(/*access address*/0, freq);
+	radio_start_rx();
+	while (nrf_radio_state_get(NRF_RADIO) != NRF_RADIO_STATE_RX) { delay_us(1); } // settle PLL
+
+	nrf_radio_event_clear(NRF_RADIO, RFX_RADIO_EVENT_IQCAPSTART);
+	nrf_radio_event_clear(NRF_RADIO, RFX_RADIO_EVENT_IQCAPEND);
+
+	uint32_t usbbuf[CFG_TUD_VENDOR_TX_BUFSIZE /4] = {0}; // initialize as uint32_t for easier decimation of the capture buffer
+	int decimation = 8*16; // 16Msps -> 2Msps, 16bit I/Q -> 1bit I/Q,
+	int streambuf_size = (CFG_TUD_VENDOR_TX_BUFSIZE /4) * decimation;
+	streambuf_size = (streambuf_size > MAXSAMP) ? MAXSAMP : streambuf_size;
+
+	uint32_t *iq_buf_2ndhalf = &iq_buf[MAXSAMP /2]; // move the capture buffer further in RAM, it does not like USB in parallel
+	uint32_t *stream_buf = iq_buf_2ndhalf;
+	while(gs_streaming) {
+		radio_set_iq_capture(stream_buf, streambuf_size);
+		radio_trigger_iq_capture();
+
+		// now we have time to send the other capture buffer over USB
+		stream_buf = (stream_buf == iq_buf_2ndhalf) ? iq_buf_2ndhalf +streambuf_size : iq_buf_2ndhalf;
+		int usbbuf_idx = 0;
+		for(int i = 0; i < streambuf_size; i+=decimation) {
+			usbbuf[usbbuf_idx++] = ((stream_buf[i] & (1 << 11)) << 20) | ((stream_buf[i] & (1 << 23)) << 7) |
+								((stream_buf[i+8] & (1 << 11)) << 18) | ((stream_buf[i+8] & (1 << 23)) << 5) |
+								((stream_buf[i+16] & (1 << 11)) << 16) | ((stream_buf[i+16] & (1 << 23)) << 3) |
+								((stream_buf[i+24] & (1 << 11)) << 14) | ((stream_buf[i+24] & (1 << 23)) << 1) |
+								((stream_buf[i+32] & (1 << 11)) << 12) | ((stream_buf[i+32] & (1 << 23)) >> 1) |
+								((stream_buf[i+40] & (1 << 11)) << 10) | ((stream_buf[i+40] & (1 << 23)) >> 3) |
+								((stream_buf[i+48] & (1 << 11)) << 8) | ((stream_buf[i+48] & (1 << 23)) >> 5) |
+								((stream_buf[i+56] & (1 << 11)) << 6) | ((stream_buf[i+56] & (1 << 23)) >> 7) |
+								((stream_buf[i+64] & (1 << 11)) << 4) | ((stream_buf[i+64] & (1 << 23)) >> 9) |
+								((stream_buf[i+72] & (1 << 11)) << 2) | ((stream_buf[i+72] & (1 << 23)) >> 11) |
+								((stream_buf[i+80] & (1 << 11)) << 0) | ((stream_buf[i+80] & (1 << 23)) >> 13) |
+								((stream_buf[i+88] & (1 << 11)) >> 2) | ((stream_buf[i+88] & (1 << 23)) >> 15) |
+								((stream_buf[i+96] & (1 << 11)) >> 4) | ((stream_buf[i+96] & (1 << 23)) >> 17) |
+								((stream_buf[i+104] & (1 << 11)) >> 6) | ((stream_buf[i+104] & (1 << 23)) >> 19) |
+								((stream_buf[i+112] & (1 << 11)) >> 8) | ((stream_buf[i+112] & (1 << 23)) >> 21) |
+								((stream_buf[i+120] & (1 << 11)) >> 10) | ((stream_buf[i+120] & (1 << 23)) >> 23);
+			// usbbuf[usbbuf_idx++]++; // test USB part of streaming
+		}
+
+		if(tud_vendor_mounted()) {
+			tud_vendor_write((uint8_t*)usbbuf, CFG_TUD_VENDOR_TX_BUFSIZE);
+			tud_vendor_write_flush();
+		}
+
+		// Keep the USB state machine moving while waiting for the capture to end
+		while (!nrf_radio_event_check(NRF_RADIO, RFX_RADIO_EVENT_IQCAPEND)) {
+			tud_task();
+		}
+
+		nrf_radio_event_clear(NRF_RADIO, RFX_RADIO_EVENT_IQCAPSTART);
+		nrf_radio_event_clear(NRF_RADIO, RFX_RADIO_EVENT_IQCAPEND);
+	}
+}
+
 void usb_cmd_handler() {
 	if(gs_usb_cmd) {
 		switch(gs_usb_cmd) {
@@ -243,10 +303,13 @@ void usb_cmd_handler() {
 		case NRF_CMD_USBTEST:
 			blink(2);
 			break;
-		case NRF_CMD_IQCAPTURE:
-			iqcapture(gs_capture_freq);
-			bulk_send();
+		case NRF_CMD_IQCAPTURE_BURST:
+			iqcapture_burst(gs_capture_freq);
+			bulk_send_burst();
 			blink(2);
+			break;
+		case NRF_CMD_IQCAPTURE_STREAM:
+			iqcapture_stream(gs_capture_freq);
 			break;
 		}
 		gs_usb_cmd = 0;

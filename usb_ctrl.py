@@ -14,24 +14,27 @@ try:
 except ImportError:
     GUI_AVAILABLE = False
 
-NRF_USB_EP_IN        = 0x81      # endpoint for data transfer in
-NRF_USB_EP_OUT       = 0x01      # endpoint for command transfer out
-NRF_USB_PACKET_SIZE  = 14*1024*4 # packet size
-NRF_USB_TIMEOUT_MS   = 100       # timeout for normal USB operations
+NRF_USB_EP_IN              = 0x81      # endpoint for data transfer in
+NRF_USB_EP_OUT             = 0x01      # endpoint for command transfer out
+NRF_USB_BURST_PACKET_SIZE  = 62*1024*4 # packet size for single burst capture
+NRF_USB_STREAM_PACKET_SIZE = 64        # packet size for streaming IQ samples
+NRF_USB_TIMEOUT_MS         = 100       # timeout for normal USB operations
 
-NRF_CMD_USBTEST      = 0xa1
-NRF_CMD_REBOOT       = 0xa2
-NRF_CMD_IQCAPTURE    = 0xca
-NRF_STR_USBTEST      = (NRF_CMD_USBTEST, 0x01, 0x00, 0x01)
-NRF_STR_REBOOT       = (NRF_CMD_REBOOT, 0x01, 0x00, 0x01)
-NRF_STR_IQCAPTURE    = (NRF_CMD_IQCAPTURE, 0x00, 0x00, 0x01)
+NRF_CMD_USBTEST            = 0xa1
+NRF_CMD_REBOOT             = 0xa2
+NRF_CMD_IQCAPTURE_STREAM   = 0xca
+NRF_CMD_IQCAPTURE_BURST    = 0xcb
+NRF_STR_USBTEST            = (NRF_CMD_USBTEST, 0x01, 0x00, 0x01)
+NRF_STR_REBOOT             = (NRF_CMD_REBOOT, 0x01, 0x00, 0x01)
+NRF_STR_IQCAPTURE_STREAM   = (NRF_CMD_IQCAPTURE_STREAM, 0x00, 0x01, 0x01)
+NRF_STR_IQCAPTURE_BURST    = (NRF_CMD_IQCAPTURE_BURST, 0x00, 0x00, 0x01)
 
 BLE_FREQUENCIES = [
-    2404, 2406, 2408, 2410, 2412, 2414, 2416, 2418, 2420, 2422, 2424, # 0-10
-    2428, 2430, 2432, 2434, 2436, 2438,                               # 11-16
-    2440, 2442, 2444, 2446, 2448, 2450, 2452, 2454, 2456, 2458, 2460, # 17-27
-    2462, 2464, 2466, 2468, 2470, 2472, 2474, 2476, 2478,             # 28-36
-    2402, 2426, 2480                                                  # 37, 38, 39
+    2404, 2406, 2408, 2410, 2412, 2414, 2416,                   #  0-6
+    2418, 2420, 2422, 2424, 2428, 2430, 2432, 2434, 2436, 2438, #  7-16
+    2440, 2442, 2444, 2446, 2448, 2450, 2452, 2454, 2456, 2458, # 17-26
+    2460, 2462, 2464, 2466, 2468, 2470, 2472, 2474, 2476, 2478, # 27-36
+    2402, 2426, 2480                                            # 37, 38, 39
 ]
 
 device = usb.core.find(idVendor=0xcafe, idProduct=0x4000)
@@ -93,7 +96,7 @@ def launch_gui():
         clear_usb_pipes()
 
         # Send command
-        cmd = bytearray(NRF_STR_IQCAPTURE)
+        cmd = bytearray(NRF_STR_IQCAPTURE_BURST)
         cmd[1] = freq - 2400
         try:
             device.write(NRF_USB_EP_OUT, cmd)
@@ -105,7 +108,7 @@ def launch_gui():
         raw_data = bytearray()
         while True:
             try:
-                data = device.read(NRF_USB_EP_IN, NRF_USB_PACKET_SIZE, timeout=NRF_USB_TIMEOUT_MS)
+                data = device.read(NRF_USB_EP_IN, NRF_USB_BURST_PACKET_SIZE, timeout=NRF_USB_TIMEOUT_MS)
                 raw_data.extend(data)
             except usb.core.USBError:
                 break # Timeout hit, end of stream
@@ -149,6 +152,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-g', '--gui', help='Launch GUI', action='store_true')
     parser.add_argument('-b', '--bootloader', help='Reboot to bootloader', action='store_true')
+    parser.add_argument('-1', '--oneshot', help='one shot IQ capture, full 12 bit 16Msps for 4 milliseconds', action='store_true')
     parser.add_argument('-c', '--channel', help='start IQ capture on BLE channel')
     parser.add_argument('-f', '--frequency', help='start IQ capture on frequency (MHz)')
     parser.add_argument('-u', '--usbtest', help='Send test command over USB to blink the LED', action='store_true')
@@ -181,7 +185,7 @@ def main():
         if args.channel:
             freq = BLE_FREQUENCIES[int(args.channel)]
             print(f'Starting capture on channel {args.channel} (={freq}MHz)')
-            cmd = bytearray(NRF_STR_IQCAPTURE)
+            cmd = bytearray(NRF_STR_IQCAPTURE_BURST if args.oneshot else NRF_STR_IQCAPTURE_STREAM)
             cmd[1] = freq - 2400
             try:
                 device.write(NRF_USB_EP_OUT, cmd)
@@ -189,7 +193,7 @@ def main():
                 print(f"Exception: {e}")
         elif args.frequency:
             print(f'Starting capture on {args.frequency}MHz')
-            cmd = bytearray(NRF_STR_IQCAPTURE)
+            cmd = bytearray(NRF_STR_IQCAPTURE_BURST if args.oneshot else NRF_STR_IQCAPTURE_STREAM)
             cmd[1] = int(args.frequency) - 2400
             try:
                 device.write(NRF_USB_EP_OUT, cmd)
@@ -200,11 +204,22 @@ def main():
         with open('capture.raw', 'wb') as f:
             while True:
                 try:
-                    data = device.read(NRF_USB_EP_IN, NRF_USB_PACKET_SIZE, timeout=NRF_USB_TIMEOUT_MS)
+                    data = device.read(NRF_USB_EP_IN, NRF_USB_BURST_PACKET_SIZE, timeout=NRF_USB_TIMEOUT_MS)
                     f.write(data)
                 except usb.core.USBError as e:
                     # Handle timeout/disconnects
-                    break    
+                    print(f"USB Exception: {e}")
+                    break
+                except KeyboardInterrupt:
+                    if not args.oneshot:
+                        cmd = bytearray(NRF_STR_IQCAPTURE_STREAM)
+                        cmd[1] = freq - 2400
+                        cmd[2] = 0 # off
+                        try:
+                            device.write(NRF_USB_EP_OUT, cmd)
+                        except Exception as e:
+                            print(f"Exception: {e}")
+                    break
     print('done')
 
 if __name__ == '__main__':
