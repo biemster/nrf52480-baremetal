@@ -20,8 +20,6 @@ static volatile int gs_usb_cmd;
 static volatile int gs_capture_freq;
 static volatile int gs_streaming;
 
-void main_loop(void);
-
 /* Dummy implementations to satisfy the linker and silence warnings */
 int _write(int handle, char *buffer, int size) { return size; }
 int _close(int file) { return -1; }
@@ -236,6 +234,32 @@ void bulk_send_burst() {
 	}
 }
 
+static inline uint32_t decimate_1bit_avg4(const uint32_t* buf, int base, int k) {
+	// 1. Load the 4 samples from RAM
+	uint32_t w0 = buf[base + k*8 + 0];
+	uint32_t w1 = buf[base + k*8 + 1];
+	uint32_t w2 = buf[base + k*8 + 2];
+	uint32_t w3 = buf[base + k*8 + 3];
+
+	// 2. Extract and sum I (bits 0-11)
+	int32_t sum_i = ((int32_t)(w0 << 20) >> 20) +
+					((int32_t)(w1 << 20) >> 20) +
+					((int32_t)(w2 << 20) >> 20) +
+					((int32_t)(w3 << 20) >> 20);
+
+	// 3. Extract and sum Q (bits 12-23)
+	int32_t sum_q = ((int32_t)(w0 << 8) >> 20) +
+					((int32_t)(w1 << 8) >> 20) +
+					((int32_t)(w2 << 8) >> 20) +
+					((int32_t)(w3 << 8) >> 20);
+
+	// 4. Extract the sign bits and shift to the correct position
+	uint32_t bit_i = ((uint32_t)sum_i >> 31) << (31 - 2*k);
+	uint32_t bit_q = ((uint32_t)sum_q >> 31) << (30 - 2*k);
+
+	return bit_i | bit_q;
+}
+
 void iqcapture_stream(int freq) {
 	init_radio(/*access address*/0, freq);
 	radio_start_rx();
@@ -259,23 +283,23 @@ void iqcapture_stream(int freq) {
 		stream_buf = (stream_buf == iq_buf_2ndhalf) ? iq_buf_2ndhalf +streambuf_size : iq_buf_2ndhalf;
 		int usbbuf_idx = 0;
 		for(int i = 0; i < streambuf_size; i+=decimation) {
-			usbbuf[usbbuf_idx++] = ((stream_buf[i] & (1 << 11)) << 20) | ((stream_buf[i] & (1 << 23)) << 7) |
-								((stream_buf[i+8] & (1 << 11)) << 18) | ((stream_buf[i+8] & (1 << 23)) << 5) |
-								((stream_buf[i+16] & (1 << 11)) << 16) | ((stream_buf[i+16] & (1 << 23)) << 3) |
-								((stream_buf[i+24] & (1 << 11)) << 14) | ((stream_buf[i+24] & (1 << 23)) << 1) |
-								((stream_buf[i+32] & (1 << 11)) << 12) | ((stream_buf[i+32] & (1 << 23)) >> 1) |
-								((stream_buf[i+40] & (1 << 11)) << 10) | ((stream_buf[i+40] & (1 << 23)) >> 3) |
-								((stream_buf[i+48] & (1 << 11)) << 8) | ((stream_buf[i+48] & (1 << 23)) >> 5) |
-								((stream_buf[i+56] & (1 << 11)) << 6) | ((stream_buf[i+56] & (1 << 23)) >> 7) |
-								((stream_buf[i+64] & (1 << 11)) << 4) | ((stream_buf[i+64] & (1 << 23)) >> 9) |
-								((stream_buf[i+72] & (1 << 11)) << 2) | ((stream_buf[i+72] & (1 << 23)) >> 11) |
-								((stream_buf[i+80] & (1 << 11)) << 0) | ((stream_buf[i+80] & (1 << 23)) >> 13) |
-								((stream_buf[i+88] & (1 << 11)) >> 2) | ((stream_buf[i+88] & (1 << 23)) >> 15) |
-								((stream_buf[i+96] & (1 << 11)) >> 4) | ((stream_buf[i+96] & (1 << 23)) >> 17) |
-								((stream_buf[i+104] & (1 << 11)) >> 6) | ((stream_buf[i+104] & (1 << 23)) >> 19) |
-								((stream_buf[i+112] & (1 << 11)) >> 8) | ((stream_buf[i+112] & (1 << 23)) >> 21) |
-								((stream_buf[i+120] & (1 << 11)) >> 10) | ((stream_buf[i+120] & (1 << 23)) >> 23);
-			// usbbuf[usbbuf_idx++]++; // test USB part of streaming
+			usbbuf[usbbuf_idx++] =
+					decimate_1bit_avg4(stream_buf, i, 0)  |
+					decimate_1bit_avg4(stream_buf, i, 1)  |
+					decimate_1bit_avg4(stream_buf, i, 2)  |
+					decimate_1bit_avg4(stream_buf, i, 3)  |
+					decimate_1bit_avg4(stream_buf, i, 4)  |
+					decimate_1bit_avg4(stream_buf, i, 5)  |
+					decimate_1bit_avg4(stream_buf, i, 6)  |
+					decimate_1bit_avg4(stream_buf, i, 7)  |
+					decimate_1bit_avg4(stream_buf, i, 8)  |
+					decimate_1bit_avg4(stream_buf, i, 9)  |
+					decimate_1bit_avg4(stream_buf, i, 10) |
+					decimate_1bit_avg4(stream_buf, i, 11) |
+					decimate_1bit_avg4(stream_buf, i, 12) |
+					decimate_1bit_avg4(stream_buf, i, 13) |
+					decimate_1bit_avg4(stream_buf, i, 14) |
+					decimate_1bit_avg4(stream_buf, i, 15);
 		}
 
 		if(tud_vendor_mounted()) {

@@ -39,7 +39,7 @@ CFLAGS += -O0
 else
 # -DNDEBUG disables asserts which usually isn't what we want
 #CFLAGS += -DNDEBUG
-CFLAGS += -Os
+CFLAGS += -O3
 CFLAGS += -flto
 endif
 
