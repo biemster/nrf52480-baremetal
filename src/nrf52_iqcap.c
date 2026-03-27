@@ -161,6 +161,7 @@ void tud_vendor_rx_cb(uint8_t intf, const uint8_t *buffer, uint32_t bufsize) {
 			switch(gs_usb_cmd) {
 			case NRF_CMD_REBOOT:
 			case NRF_CMD_USBTEST:
+				gs_streaming = 0;
 				break;
 			case NRF_CMD_IQCAPTURE_STREAM:
 				gs_capture_freq = 2400 +buf[1];
@@ -333,6 +334,7 @@ void usb_cmd_handler() {
 			blink(2);
 			break;
 		case NRF_CMD_IQCAPTURE_STREAM:
+			gs_usb_cmd = 0; // iqcapture_stream() is blocking
 			iqcapture_stream(gs_capture_freq);
 			break;
 		}
