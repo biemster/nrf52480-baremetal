@@ -238,9 +238,9 @@ void bulk_send_burst() {
 static inline uint32_t decimate_1bit_avg4(const uint32_t* buf, int base, int k) {
 	// 1. Load the 4 samples from RAM
 	uint32_t w0 = buf[base + k*8 + 0];
-	uint32_t w1 = buf[base + k*8 + 1];
-	uint32_t w2 = buf[base + k*8 + 2];
-	uint32_t w3 = buf[base + k*8 + 3];
+	uint32_t w1 = buf[base + k*8 + 2];
+	uint32_t w2 = buf[base + k*8 + 4];
+	uint32_t w3 = buf[base + k*8 + 6];
 
 	// 2. Extract and sum I (bits 0-11)
 	int32_t sum_i = ((int32_t)(w0 << 20) >> 20) +
