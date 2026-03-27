@@ -48,7 +48,7 @@ CFLAGS += -DNRF52840_XXAA
 CFLAGS += -mthumb
 CFLAGS += -mcpu=cortex-m4
 CFLAGS += -mfpu=fpv4-sp-d16
-CFLAGS += -mfloat-abi=softfp
+CFLAGS += -mfloat-abi=hard
 CFLAGS += -std=c99
 CFLAGS += -Wall -Wno-format
 CFLAGS += -fno-common
