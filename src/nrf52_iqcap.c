@@ -269,9 +269,9 @@ void iqcapture_stream(int freq) {
 	nrf_radio_event_clear(NRF_RADIO, RFX_RADIO_EVENT_IQCAPSTART);
 	nrf_radio_event_clear(NRF_RADIO, RFX_RADIO_EVENT_IQCAPEND);
 
-	uint32_t usbbuf[CFG_TUD_VENDOR_TX_BUFSIZE /4] = {0}; // initialize as uint32_t for easier decimation of the capture buffer
+	uint32_t usbbuf[CFG_TUD_VENDOR_EPSIZE /4] = {0}; // initialize as uint32_t for easier decimation of the capture buffer
 	int decimation = 8*16; // 16Msps -> 2Msps, 16bit I/Q -> 1bit I/Q,
-	int streambuf_size = (CFG_TUD_VENDOR_TX_BUFSIZE /4) * decimation;
+	int streambuf_size = (CFG_TUD_VENDOR_EPSIZE /4) * decimation;
 	streambuf_size = (streambuf_size > MAXSAMP) ? MAXSAMP : streambuf_size;
 
 	uint32_t *iq_buf_2ndhalf = &iq_buf[MAXSAMP /2]; // move the capture buffer further in RAM, it does not like USB in parallel
@@ -304,8 +304,14 @@ void iqcapture_stream(int freq) {
 		}
 
 		if(tud_vendor_mounted()) {
-			tud_vendor_write((uint8_t*)usbbuf, CFG_TUD_VENDOR_TX_BUFSIZE);
-			tud_vendor_write_flush();
+			uint32_t written = 0;
+			// Loop guarantees we don't drop data if the FIFO is momentarily full
+			while (written < CFG_TUD_VENDOR_EPSIZE && tud_vendor_mounted() && gs_streaming) {
+				uint32_t pushed = tud_vendor_write(((uint8_t*)usbbuf) + written, CFG_TUD_VENDOR_EPSIZE - written);
+				written += pushed;
+				tud_vendor_write_flush();
+				tud_task();
+			}
 		}
 
 		// Keep the USB state machine moving while waiting for the capture to end

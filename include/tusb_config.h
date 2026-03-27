@@ -45,7 +45,7 @@
 
 // Buffer sizes for TinyUSB internal FIFOs.
 #define CFG_TUD_VENDOR_RX_BUFSIZE  64
-#define CFG_TUD_VENDOR_TX_BUFSIZE  64
+#define CFG_TUD_VENDOR_TX_BUFSIZE  2048
 
 #ifdef __cplusplus
  }
